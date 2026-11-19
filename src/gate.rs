@@ -2,6 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use sha2::{Digest, Sha256};
+
 use crate::config::Limits;
 use crate::platform::Kind;
 
@@ -37,16 +39,40 @@ pub struct Admitted {
     pub new_platform: bool,
 }
 
-#[derive(Default)]
+/// Counters held at once; the unauthenticated routes create them from caller input.
+pub const MAX_WINDOWS: usize = 100_000;
+
+type Slot = [u8; 16];
+
+fn slot(r: &Rule) -> Slot {
+    let mut h = Sha256::new();
+    h.update(r.scope);
+    h.update([0]);
+    h.update(r.key);
+    h.finalize()[..16].try_into().unwrap()
+}
+
 pub struct Gate {
-    windows: HashMap<String, (u64, u32)>,
+    /// Window start, window length, count.
+    windows: HashMap<Slot, (u64, u64, u32)>,
     nids: HashMap<(String, [u8; 16]), Nid>,
+    pub max_windows: usize,
+}
+
+impl Default for Gate {
+    fn default() -> Self {
+        Self {
+            windows: HashMap::new(),
+            nids: HashMap::new(),
+            max_windows: MAX_WINDOWS,
+        }
+    }
 }
 
 impl Gate {
     fn check(&self, r: &Rule, now: u64) -> Result<(), Reject> {
-        match self.windows.get(r.key) {
-            Some(&(start, count)) if now < start + r.window && count >= r.limit => {
+        match self.windows.get(&slot(r)) {
+            Some(&(start, _, count)) if now < start + r.window && count >= r.limit => {
                 Err(Reject::Limited {
                     scope: r.scope,
                     retry_after: start + r.window - now,
@@ -57,16 +83,25 @@ impl Gate {
     }
 
     fn bump(&mut self, r: &Rule, now: u64) {
-        let e = self.windows.entry(r.key.to_string()).or_insert((now, 0));
+        let e = self.windows.entry(slot(r)).or_insert((now, r.window, 0));
         if now >= e.0 + r.window {
-            *e = (now, 0);
+            *e = (now, r.window, 0);
         }
-        e.1 += 1;
+        e.2 += 1;
     }
 
     /// Checks every rule, then counts them all: a refused request consumes nothing.
     pub fn hit(&mut self, rules: &[Rule], now: u64) -> Result<(), Reject> {
         rules.iter().try_for_each(|r| self.check(r, now))?;
+        if self.windows.len() + rules.len() > self.max_windows {
+            self.prune(now);
+            if self.windows.len() + rules.len() > self.max_windows {
+                return Err(Reject::Limited {
+                    scope: "relay",
+                    retry_after: 60,
+                });
+            }
+        }
         rules.iter().for_each(|r| self.bump(r, now));
         Ok(())
     }
@@ -138,7 +173,8 @@ impl Gate {
     }
 
     pub fn prune(&mut self, now: u64) {
-        self.windows.retain(|_, (start, _)| now < *start + DAY);
+        self.windows
+            .retain(|_, (start, window, _)| now < *start + *window);
         self.nids.retain(|_, n| now < n.at + HOUR);
     }
 }

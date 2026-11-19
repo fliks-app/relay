@@ -39,8 +39,11 @@ docker run -p 8080:8080 -v relay-data:/data -e RELAY_HOST=relay.example.org \
 ```
 
 `RELAY_FAKE_PLATFORMS=1` records pushes and sends nothing: development without credentials. The APNs
-and FCM senders are not in this version yet. Put a TLS reverse proxy in front, and set
-`RELAY_TRUSTED_PROXY_HOPS` to the number of proxies so the client IP is read from `X-Forwarded-For`.
+and FCM senders are not in this version yet. Put a TLS reverse proxy in front: the relay has no
+TLS and no header read timeout of its own, so the proxy sets both. Set `RELAY_TRUSTED_PROXY_HOPS` to the
+number of proxies (normally `1`): the client IP is then read from `X-Forwarded-For`, and a request that
+arrives without it is refused. With the default `0` the peer address is used, so behind a proxy every
+new server would share one IP budget; the relay logs a warning at start.
 
 Another relay only delivers to an app built by its operator (APNs and FCM tokens belong to the
 publisher's app), and the store apps compile in the official relay host. A fork points its own build
@@ -55,7 +58,7 @@ All by environment. Limits are fixed windows in memory, reset on restart, for on
 | `RELAY_HOST` (canonical host, signed into requests and tickets; required) | none |
 | `RELAY_DATA_DIR` (`relay.db` and `stats_secret`) | `./data` |
 | `RELAY_BIND` | `0.0.0.0:8080` |
-| `RELAY_TRUSTED_PROXY_HOPS` | `0` |
+| `RELAY_TRUSTED_PROXY_HOPS` (set to `1` behind one proxy) | `0` |
 | `RELAY_LIMIT_PUSH_PER_SUBSCRIPTION_HOUR` | `30` |
 | `RELAY_LIMIT_PUSH_PER_TOKEN_HOUR` (across all servers) | `60` |
 | `RELAY_LIMIT_NOTIFICATIONS_PER_SERVER_HOUR` (distinct `nid`) | `1000` |

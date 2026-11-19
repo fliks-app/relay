@@ -58,11 +58,26 @@
     },
     "wrong_audience": "eyJrZXkiOiJBNkVIdl9QT0VMNGRjTjBZNTB2QW1XZmsxakNicFExZkhkeUdaQkpWTWJnIiwic3ViIjoiRUJFU0V4UVZGaGNZR1JvYkhCMGVIdyIsImF1ZCI6InJlbGF5Lm90aGVyLnRlc3QiLCJleHAiOjE4MDAwMDAzMDB9.Km5KmNxkRPWKccI8OunuTkXX6ym9bozhGHM_wkgTbF77DfHw3ctKW7aQRxvMsKT4tZfvzfTrG7R7CIxHN7MPBw",
     "expired": "eyJrZXkiOiJBNkVIdl9QT0VMNGRjTjBZNTB2QW1XZmsxakNicFExZkhkeUdaQkpWTWJnIiwic3ViIjoiRUJFU0V4UVZGaGNZR1JvYkhCMGVIdyIsImF1ZCI6InJlbGF5LmV4YW1wbGUudGVzdCIsImV4cCI6MTc5OTk5OTk5OX0.CtRw3WDsddOWE6YRNtpHLunsYhexZ2CviPgr1zcyLnuDPL3UG4xTWeH3WVoflfYJtBkVcYUUUM7w1nTPzahpAw",
-    "too_far_ahead": "eyJrZXkiOiJBNkVIdl9QT0VMNGRjTjBZNTB2QW1XZmsxakNicFExZkhkeUdaQkpWTWJnIiwic3ViIjoiRUJFU0V4UVZGaGNZR1JvYkhCMGVIdyIsImF1ZCI6InJlbGF5LmV4YW1wbGUudGVzdCIsImV4cCI6MTgwMDAwMDYwMX0.f3mEBrXVLAnrLSiwE27tHpIxpNU41anHbJmy1lFryKjaFT_fKGSiv6FCyD5yVQLYuLSmoC-IgSjCJRXmUmOBCw"
+    "too_far_ahead": "eyJrZXkiOiJBNkVIdl9QT0VMNGRjTjBZNTB2QW1XZmsxakNicFExZkhkeUdaQkpWTWJnIiwic3ViIjoiRUJFU0V4UVZGaGNZR1JvYkhCMGVIdyIsImF1ZCI6InJlbGF5LmV4YW1wbGUudGVzdCIsImV4cCI6MTgwMDAwMDYwMX0.f3mEBrXVLAnrLSiwE27tHpIxpNU41anHbJmy1lFryKjaFT_fKGSiv6FCyD5yVQLYuLSmoC-IgSjCJRXmUmOBCw",
+    "malformed_sub": "eyJrZXkiOiJBNkVIdl9QT0VMNGRjTjBZNTB2QW1XZmsxakNicFExZkhkeUdaQkpWTWJnIiwic3ViIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME8iLCJhdWQiOiJyZWxheS5leGFtcGxlLnRlc3QiLCJleHAiOjE4MDAwMDAzMDB9.gFbjMyHNqWPRRrHYPEdjAUpKIMa3AsMDKiiZJHa9MzoqOdP88nbBbkyHZII7JWftBKRw4Ki9qn1WxLhIPMPCCg",
+    "malformed_key": "eyJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGciLCJzdWIiOiJFQkVTRXhRVkZoY1lHUm9iSEIwZUh3IiwiYXVkIjoicmVsYXkuZXhhbXBsZS50ZXN0IiwiZXhwIjoxODAwMDAwMzAwfQ.kyA1dUr_rdrZLelu9xbs6NZZrwZoG4VQmsssyvkwL2f6bYP2Pen4pa-TQuMM4n_rZ9gGV3UfsfRNvxbqO6cBAw"
   },
   "stats_id": {
     "stats_secret_hex": "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283",
     "key": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
     "server_id": "78eec61c88006896"
+  },
+  "clock_skew": {
+    "note": "requests[0] is accepted when R's clock is within 300 s of its time, refused with 401 clock_skew beyond",
+    "request": 0,
+    "accepted_at": [
+      1799999700,
+      1800000000,
+      1800000300
+    ],
+    "refused_at": [
+      1799999699,
+      1800000301
+    ]
   }
 }

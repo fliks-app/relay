@@ -62,9 +62,11 @@ pub async fn bump_global(pool: &SqlitePool, day: &str, f: Field) -> sqlx::Result
     Ok(())
 }
 
+/// Counts for a server that still exists: a push in flight while the server unregisters leaves no row.
 pub async fn bump_server(
     pool: &SqlitePool,
     day: &str,
+    key: &str,
     server_id: &str,
     platform: &str,
     f: Field,
@@ -73,12 +75,14 @@ pub async fn bump_server(
         return Ok(());
     };
     sqlx::query(&format!(
-        "INSERT INTO stats_server_daily (day, server_id, platform, {c}) VALUES (?, ?, ?, 1) \
+        "INSERT INTO stats_server_daily (day, server_id, platform, {c}) \
+         SELECT ?, ?, ?, 1 WHERE EXISTS (SELECT 1 FROM servers WHERE key = ?) \
          ON CONFLICT (day, server_id, platform) DO UPDATE SET {c} = {c} + 1"
     ))
     .bind(day)
     .bind(server_id)
     .bind(platform)
+    .bind(key)
     .execute(pool)
     .await?;
     Ok(())
@@ -88,11 +92,12 @@ pub async fn bump_server(
 pub async fn count(
     pool: &SqlitePool,
     day: &str,
+    key: &str,
     server_id: &str,
     platform: &str,
     f: Field,
 ) -> sqlx::Result<()> {
-    bump_server(pool, day, server_id, platform, f).await?;
+    bump_server(pool, day, key, server_id, platform, f).await?;
     bump_global(pool, day, f).await
 }
 

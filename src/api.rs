@@ -7,6 +7,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, Path, Request, State};
 use axum::http::StatusCode;
 use axum::http::request::Parts;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -26,6 +27,7 @@ const MAX_PAYLOAD: usize = 2700;
 const MAX_TTL: u32 = 259_200;
 const MAX_TOKEN: usize = 4096;
 const AUTO_BLOCK_DEAD: i64 = 50;
+const BODY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 pub struct AppState {
     pub pool: SqlitePool,
@@ -89,16 +91,22 @@ pub fn router(state: Shared) -> Router {
         .with_state(state)
 }
 
-type Reply = Result<(StatusCode, Json<Value>), ApiError>;
+type Reply = Result<Response, ApiError>;
 
+/// A 204 has no body.
 fn ok(status: u16) -> Reply {
-    Ok((StatusCode::from_u16(status).unwrap(), Json(json!({}))))
+    match status {
+        204 => Ok(StatusCode::NO_CONTENT.into_response()),
+        _ => Ok((StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response()),
+    }
 }
 
 async fn body_of(req: Request) -> Result<(Parts, Bytes), ApiError> {
     let (parts, body) = req.into_parts();
-    let bytes = axum::body::to_bytes(Body::new(body), MAX_BODY)
+    let read = axum::body::to_bytes(Body::new(body), MAX_BODY);
+    let bytes = tokio::time::timeout(BODY_TIMEOUT, read)
         .await
+        .map_err(|_| ApiError::new(408, "request_timeout"))?
         .map_err(|_| ApiError::too_large())?;
     Ok((parts, bytes))
 }
@@ -137,39 +145,49 @@ async fn member(st: &AppState, a: &Signed) -> Result<(), ApiError> {
     if store::is_blocked(&st.pool, &a.key).await? {
         return Err(ApiError::blocked());
     }
-    let prev = store::server_last_seen(&st.pool, &a.b64)
-        .await?
-        .ok_or_else(|| ApiError::new(401, "unknown_server"))?;
+    if !store::server_exists(&st.pool, &a.b64).await? {
+        return Err(ApiError::new(401, "unknown_server"));
+    }
     let now = st.now();
-    store::server_touch(&st.pool, &a.b64, now).await?;
-    if stats::day(prev as u64) != stats::day(now) {
+    if store::server_touch(&st.pool, &a.b64, now).await? {
         stats::bump_global(&st.pool, &stats::day(now), Field::ServersActive).await?;
     }
     Ok(())
 }
 
-fn client_key(st: &AppState, parts: &Parts) -> String {
-    let peer = parts
-        .extensions
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|c| c.0.ip());
+/// Budget key of the caller. Behind `proxy_hops` trusted proxies the address is the one they appended
+/// to `X-Forwarded-For`; a request that lacks it did not come through them and is refused.
+fn client_key(st: &AppState, parts: &Parts) -> Result<String, ApiError> {
     let hops = st.cfg.proxy_hops;
-    let fwd = parts
-        .headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .filter(|_| hops > 0)
-        .and_then(|v| {
-            let ips: Vec<&str> = v.split(',').map(str::trim).collect();
-            ips.len()
-                .checked_sub(hops)
-                .and_then(|i| ips[i].parse::<IpAddr>().ok())
-        });
-    match fwd.or(peer) {
+    let ip = if hops > 0 {
+        let ips: Vec<IpAddr> = parts
+            .headers
+            .get_all("x-forwarded-for")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(','))
+            .filter_map(|v| v.trim().parse().ok())
+            .collect();
+        match ips.len().checked_sub(hops) {
+            Some(i) => Some(ips[i]),
+            None => {
+                tracing::error!(
+                    "X-Forwarded-For has fewer than {hops} addresses: is the proxy in front?"
+                );
+                return Err(ApiError::bad_request());
+            }
+        }
+    } else {
+        parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|c| c.0.ip())
+    };
+    Ok(match ip {
         Some(IpAddr::V4(a)) => format!("ip:{a}"),
         Some(IpAddr::V6(a)) => format!("ip6:{}", hex::encode(&a.octets()[..6])),
         None => "ip:unknown".into(),
-    }
+    })
 }
 
 async fn info(State(st): State<Shared>) -> Json<Value> {
@@ -190,11 +208,11 @@ async fn register(State(st): State<Shared>, req: Request) -> Reply {
     if store::is_blocked(&st.pool, &a.key).await? {
         return Err(ApiError::blocked());
     }
-    if store::server_last_seen(&st.pool, &a.b64).await?.is_some() {
+    if store::server_exists(&st.pool, &a.b64).await? {
         member(&st, &a).await?;
         return ok(200);
     }
-    let (ip, l) = (client_key(&st, &a.parts), &st.cfg.limits);
+    let (ip, l) = (client_key(&st, &a.parts)?, &st.cfg.limits);
     st.hit(&[
         Rule {
             scope: "new_servers_ip",
@@ -241,7 +259,7 @@ async fn own_stats(State(st): State<Shared>, req: Request) -> Reply {
                    "accepted": r.accepted, "limited": r.limited, "failed": r.failed, "dead": r.dead})
         })
         .collect();
-    Ok((StatusCode::OK, Json(json!({ "days": days }))))
+    Ok((StatusCode::OK, Json(json!({ "days": days }))).into_response())
 }
 
 #[derive(Deserialize)]
@@ -263,23 +281,23 @@ async fn subscribe(State(st): State<Shared>, req: Request) -> Reply {
         return Err(ApiError::blocked());
     }
     let key = b64(&t.key);
-    if store::server_last_seen(&st.pool, &key).await?.is_none() {
+    if !store::server_exists(&st.pool, &key).await? {
         return Err(ApiError::new(403, "unknown_server"));
     }
     if st.platforms.get(b.platform).is_none() {
         return Err(ApiError::new(400, "unsupported_platform"));
     }
     let sub = b64(&t.sub);
+    let cap = st.cfg.limits.subs_per_server;
+    if !store::sub_has_room(&st.pool, &key, &sub, cap).await? {
+        return Err(ApiError::new(403, "subscription_cap"));
+    }
     st.hit(&[Rule {
         scope: "subscription_put",
         key: &format!("put:{key}:{sub}"),
         limit: st.cfg.limits.put_per_sub,
         window: HOUR,
     }])?;
-    let exists = store::sub_get(&st.pool, &key, &sub).await?.is_some();
-    if !exists && store::sub_count(&st.pool, &key).await? >= st.cfg.limits.subs_per_server as i64 {
-        return Err(ApiError::new(403, "subscription_cap"));
-    }
     let env = match b.platform {
         Kind::Apns => Some(b.env.unwrap_or(Env::Production).as_str().to_string()),
         Kind::Fcm => None,
@@ -289,10 +307,18 @@ async fn subscribe(State(st): State<Shared>, req: Request) -> Reply {
         env,
         token: b.token,
     };
-    store::sub_upsert(&st.pool, &key, &sub, &row, st.now()).await?;
-    if !exists {
-        stats::refresh_gauges(&st.pool, &stats::day(st.now())).await?;
+    let stored = store::sub_upsert(&st.pool, &key, &sub, &row, cap, st.now())
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::Database(d) if d.is_foreign_key_violation() => {
+                ApiError::new(403, "unknown_server")
+            }
+            e => e.into(),
+        })?;
+    if !stored {
+        return Err(ApiError::new(403, "subscription_cap"));
     }
+    stats::refresh_gauges(&st.pool, &stats::day(st.now())).await?;
     ok(204)
 }
 
@@ -375,7 +401,7 @@ async fn push(State(st): State<Shared>, req: Request) -> Reply {
         kind,
         now,
     );
-    let count = |f| stats::count(&st.pool, &day, &sid, kind.as_str(), f);
+    let count = |f| stats::count(&st.pool, &day, &a.b64, &sid, kind.as_str(), f);
     let admitted = match admitted {
         Ok(x) => x,
         Err(Reject::Duplicate) => return Err(ApiError::new(409, "duplicate")),
@@ -385,7 +411,15 @@ async fn push(State(st): State<Shared>, req: Request) -> Reply {
         }
     };
     if admitted.new_platform {
-        stats::bump_server(&st.pool, &day, &sid, kind.as_str(), Field::Notifications).await?;
+        stats::bump_server(
+            &st.pool,
+            &day,
+            &a.b64,
+            &sid,
+            kind.as_str(),
+            Field::Notifications,
+        )
+        .await?;
     }
     if admitted.new_nid {
         stats::bump_global(&st.pool, &day, Field::Notifications).await?;
