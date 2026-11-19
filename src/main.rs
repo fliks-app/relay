@@ -148,6 +148,12 @@ async fn serve(cfg: Config) -> Result<()> {
     let pool = open(&cfg).await?;
     let secret = stats_secret(&cfg)?;
     let platforms = if cfg.fake_platforms {
+        let real = std::env::vars().any(|(k, v)| {
+            !v.is_empty() && (k.starts_with("APNS_") || k == "FCM_SERVICE_ACCOUNT_FILE")
+        });
+        if real {
+            bail!("RELAY_FAKE_PLATFORMS=1 is set next to real APNS_* / FCM_* credentials");
+        }
         Platforms::fake().0
     } else {
         real_platforms()?
@@ -195,6 +201,15 @@ fn required(name: &str) -> Result<String> {
     env(name).with_context(|| format!("{name} is not set"))
 }
 
+fn read_secret(file: &str) -> Result<Vec<u8>> {
+    use std::os::unix::fs::PermissionsExt;
+    let bytes = std::fs::read(file).with_context(|| format!("reading {file}"))?;
+    if std::fs::metadata(file)?.permissions().mode() & 0o077 != 0 {
+        tracing::warn!("{file} is readable by group or others: chmod 600 it");
+    }
+    Ok(bytes)
+}
+
 /// APNs from `APNS_*`, FCM from `FCM_SERVICE_ACCOUNT_FILE`; each is optional, one is required.
 fn real_platforms() -> Result<Platforms> {
     let client = reqwest::Client::builder()
@@ -210,17 +225,25 @@ fn real_platforms() -> Result<Platforms> {
             "https://api.sandbox.push.apple.com",
         ),
     ] {
-        if let Some(id) = env(&format!("APNS_KEY_ID_{suffix}")) {
-            let file = required(&format!("APNS_KEY_FILE_{suffix}"))?;
-            keys.push((
+        let (id, file) = (
+            env(&format!("APNS_KEY_ID_{suffix}")),
+            env(&format!("APNS_KEY_FILE_{suffix}")),
+        );
+        match (id, file) {
+            (Some(key_id), Some(file)) => keys.push((
                 e,
                 EnvKey {
-                    key_id: id,
-                    pem: std::fs::read(&file).with_context(|| format!("reading {file}"))?,
+                    key_id,
+                    pem: read_secret(&file)?,
                     base_url: url.into(),
                 },
-            ));
+            )),
+            (None, None) => {}
+            _ => bail!("APNS_KEY_ID_{suffix} and APNS_KEY_FILE_{suffix} must be set together"),
         }
+    }
+    if keys.is_empty() && (env("APNS_TOPIC").is_some() || env("APNS_TEAM_ID").is_some()) {
+        bail!("APNS_TOPIC / APNS_TEAM_ID are set but no APNS key is");
     }
     if !keys.is_empty() {
         let apns = Apns::new(
@@ -232,10 +255,8 @@ fn real_platforms() -> Result<Platforms> {
         platforms = platforms.with(Kind::Apns, Arc::new(apns));
     }
     if let Some(file) = env("FCM_SERVICE_ACCOUNT_FILE") {
-        let account = serde_json::from_slice(
-            &std::fs::read(&file).with_context(|| format!("reading {file}"))?,
-        )
-        .with_context(|| format!("{file} is not a service account file"))?;
+        let account = serde_json::from_slice(&read_secret(&file)?)
+            .with_context(|| format!("{file} is not a service account file"))?;
         let fcm = Fcm::new(client, account, "https://fcm.googleapis.com")?;
         platforms = platforms.with(Kind::Fcm, Arc::new(fcm));
     }

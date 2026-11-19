@@ -284,8 +284,15 @@ async fn subscribe(State(st): State<Shared>, req: Request) -> Reply {
     if !store::server_exists(&st.pool, &key).await? {
         return Err(ApiError::new(403, "unknown_server"));
     }
-    if st.platforms.get(b.platform).is_none() {
+    let env = match b.platform {
+        Kind::Apns => Some(b.env.unwrap_or(Env::Production)),
+        Kind::Fcm => None,
+    };
+    let Some(platform) = st.platforms.get(b.platform) else {
         return Err(ApiError::new(400, "unsupported_platform"));
+    };
+    if !platform.serves(env) {
+        return Err(ApiError::new(400, "unsupported_environment"));
     }
     let sub = b64(&t.sub);
     let cap = st.cfg.limits.subs_per_server;
@@ -298,13 +305,9 @@ async fn subscribe(State(st): State<Shared>, req: Request) -> Reply {
         limit: st.cfg.limits.put_per_sub,
         window: HOUR,
     }])?;
-    let env = match b.platform {
-        Kind::Apns => Some(b.env.unwrap_or(Env::Production).as_str().to_string()),
-        Kind::Fcm => None,
-    };
     let row = Sub {
         platform: b.platform.as_str().into(),
-        env,
+        env: env.map(|e| e.as_str().to_string()),
         token: b.token,
     };
     let stored = store::sub_upsert(&st.pool, &key, &sub, &row, cap, st.now())

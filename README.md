@@ -43,7 +43,11 @@ docker run -p 8080:8080 -v relay-data:/data \
 ```
 
 The image is `ghcr.io/fliks-app/relay`; release binaries (linux x86_64 and aarch64) are attached to each
-GitHub release. To build it yourself: `docker build -t fliks-relay .`.
+GitHub release. They are built on Ubuntu 24.04 runners and link glibc 2.39 or newer, so they will not
+start on Debian 12; use the image there. To build it yourself: `docker build -t fliks-relay .`.
+
+GHCR creates the package private on the first publish: make `fliks-app/relay` public in the package
+settings once, or pulls fail without a login.
 
 Put a TLS reverse proxy in front: the relay has no TLS and no header read timeout of its own, so the
 proxy sets both. Set `RELAY_TRUSTED_PROXY_HOPS` to the number of proxies (normally `1`): the client IP is
