@@ -18,16 +18,18 @@ at most 8 KiB (`413` above). Binary values are base64url without padding.
   "fliks-relay-v1" \n METHOD \n HOST \n PATH \n TIME \n lowercase-hex(sha256(body))
   ```
 
-  `METHOD` is uppercase. `PATH` is the request path without query. `TIME` is the decimal text of
-  `Fliks-Time`. `body` is the raw request body (empty for `GET` and `DELETE`: the digest of nothing).
+  `METHOD` is uppercase. `PATH` is the raw request path as sent, without query and without percent-decoding or normalisation. `TIME` is the decimal text of
+  `Fliks-Time`, which must be canonical (no sign, no leading zero): `+123` and `0123` are refused. `body` is the raw request body (empty for `GET` and `DELETE`: the digest of nothing).
 - `HOST` is the relay's canonical host as R is configured (`RELAY_HOST`, for example
   `relay.example.test`), never the received `Host` header. A request signed for another relay does not
   verify. S signs the host of the relay URL it was configured with.
 - R refuses a time more than 300 s from its own with `401 clock_skew`. S reads the `Date` header of
-  the reply, keeps the offset, retries once, and uses the same offset for every time it puts on the
+  the reply (set by the relay's HTTP server on every reply, never by the application), keeps the offset, retries once, and uses the same offset for every time it puts on the
   wire, tickets included.
-- A replayed signed request inside the window is harmless for a push (`nid` dedup, below) and
-  idempotent for the other routes.
+- There is no nonce: a signed request can be replayed during its 300 s window. A replayed push is a
+  `409 duplicate` (`nid`, below). A replayed `DELETE /v1/servers/self` or `DELETE /v1/subscriptions/{sub}`
+  deletes again what S registered since; S heals as for any lost row (`401 unknown_server`, then register
+  again). TLS is what keeps the request from being captured.
 
 ## Ticket (S to D to R)
 
@@ -50,11 +52,12 @@ and `"scope"`.
 |---|---|---|
 | 400 | `bad_request`, `unsupported_platform` | malformed body or field; platform the relay does not serve |
 | 401 | `bad_signature`, `clock_skew`, `bad_ticket`, `unknown_server` | see above; `unknown_server`: key not registered |
-| 403 | `blocked`, `unknown_server`, `subscription_cap` | on `PUT /v1/subscriptions`, `unknown_server` is a 403 |
+| 403 | `blocked`, `unknown_server`, `subscription_cap` | `unknown_server` is a 403 on `PUT /v1/subscriptions` (the caller is a device, not a signed server) and a 401 on the signed routes |
 | 404 | `unknown_subscription` | no such `(key, sub)`, or the platform says the token is dead |
 | 409 | `duplicate` | this `nid` was already pushed to this `sub` |
 | 413 | `payload_too_large` | body over 8 KiB, payload over 2700 bytes decoded |
-| 429 | `rate_limited` | `scope`: `server`, `subscription`, `token`, `subscription_put`, `token_delete`, `new_servers_ip`, `new_servers` |
+| 408 | `request_timeout` | the body took more than 10 s |
+| 429 | `rate_limited` | `scope`: `server`, `subscription`, `token`, `subscription_put`, `token_delete`, `new_servers_ip`, `new_servers`, `relay` (the relay's counters are full: retry later) |
 | 502 | `platform_error` | the platform refused or failed |
 
 ## Routes
@@ -63,11 +66,11 @@ and `"scope"`.
 |---|---|---|---|
 | `GET /v1/info` | anyone | none | `{"api": 1, "platforms": [...], "limits": {...}}` |
 | `POST /v1/servers` | S, signed | `{}` | 201, or 200 when known; `403 blocked` |
-| `DELETE /v1/servers/self` | S, signed | none | 204; deletes the server, its subscriptions and its counters; idempotent; allowed for a blocked key |
+| `DELETE /v1/servers/self` | S, signed | none | 204; deletes the server, its subscriptions and its counters; allowed for a blocked key, and for an unknown one (204) |
 | `GET /v1/servers/self/stats` | S, signed | none | `{"days": [{day, platform, notifications, accepted, limited, failed, dead}]}`, last 30 days |
 | `PUT /v1/subscriptions` | D, ticket | `{ticket, platform, token, env?}` | 204; upsert on `(key, sub)` |
 | `DELETE /v1/subscriptions/{sub}` | S, signed | none | 204; scoped to the signing key |
-| `DELETE /v1/subscriptions` | D, knows the token | `{platform, token, sub?}` | 204; deletes the rows of that token, of that `sub` only when given |
+| `DELETE /v1/subscriptions` | D, knows the token | `{platform, token, sub?}` | 204 (also when no row matched); deletes the rows of that token, of that `sub` only when given; `400 bad_request` for a malformed body or `sub`; `429` past 10 per hour per token |
 | `POST /v1/push` | S, signed | `{nid, sub, payload, ttl}` | see below |
 
 - `platform`: `"apns"` or `"fcm"`. `env`: `"sandbox"` or `"production"`, read for APNs only
@@ -99,6 +102,13 @@ Body `{nid, sub, payload, ttl}`:
 | `403 blocked`, `413`, `502` | blocked key, payload too large, platform failure | drops, logs |
 
 R remembers each `nid` for an hour, so a `nid` reaches each of a server's subscriptions at most once.
+The slot is taken before the platform is called: a push that ends in `502` or `413` from the platform
+cannot be retried with the same `nid` for an hour (S sends a new notification, with a new `nid`).
+`429` and `403 blocked` take no slot.
+
+R blocks a key automatically when, in one UTC day, `dead > 50` and `dead * 2 > accepted + failed + dead`,
+counting the pushes that reached a platform (`accepted`, `failed`, `dead`). An operator can block and
+unblock a key by hand.
 
 ### What R sends to the platform
 
@@ -121,8 +131,8 @@ D checks every push before showing it:
 ## Encryption
 
 The payload is an RFC 8291 `aes128gcm` message, one record, 103 bytes of overhead, encrypted by S for
-one subscription (D's P-256 public key and 16-byte auth secret). RFC 8291 Appendix A is the test
-vector. The plaintext is JSON of 2500 bytes at most:
+one subscription (D's P-256 public key and 16-byte auth secret). R never decrypts or checks it, so this
+repository has no vector for it: the RFC's own Appendix A is the reference. The plaintext is JSON of 2500 bytes at most:
 `{v: 1, id, ts, ttl, cat, title, body, url, image?, actions?, badge?, user}`.
 
 ## Statistics id
@@ -137,8 +147,10 @@ so the vector pins the construction.
 - server seed `000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f`, key `A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg`;
 - three signed requests (`requests`), with the exact signed string and signature, and one signed for
   another host that must not verify (`request_wrong_host`);
+- `clock_skew`: `requests[0]` verifies when the relay's time is 300 s before or after its own `time`, and
+  is refused with `401 clock_skew` at 301 s;
 - tickets at `now = 1800000000`: one valid, and one each with a wrong audience, expired,
-  and more than 600 s ahead;
+  more than 600 s ahead, a `sub` of 15 bytes, and a `key` of 31 bytes;
 - the statistics id for a secret and a key.
 
 The first request:

@@ -57,14 +57,30 @@ async fn open(cfg: &Config) -> Result<SqlitePool> {
 }
 
 fn stats_secret(cfg: &Config) -> Result<Vec<u8>> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
     let path = cfg.data_dir.join("stats_secret");
-    if let Ok(s) = std::fs::read_to_string(&path) {
-        return hex::decode(s.trim()).context("stats_secret is not hex");
-    }
     let mut secret = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut secret);
-    std::fs::write(&path, hex::encode(secret))?;
-    Ok(secret.to_vec())
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+    {
+        Ok(mut f) => f.write_all(hex::encode(secret).as_bytes())?,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e.into()),
+    }
+    let stored =
+        hex::decode(std::fs::read_to_string(&path)?.trim()).context("stats_secret is not hex")?;
+    if stored.len() != 32 {
+        bail!(
+            "{} is truncated: delete it only if the statistics may lose their ids",
+            path.display()
+        );
+    }
+    Ok(stored)
 }
 
 #[tokio::main]
@@ -125,6 +141,11 @@ async fn serve(cfg: Config) -> Result<()> {
     if !cfg.fake_platforms {
         bail!(
             "no platform is configured: set RELAY_FAKE_PLATFORMS=1 (the APNs and FCM senders are not built in yet)"
+        );
+    }
+    if cfg.proxy_hops == 0 {
+        tracing::warn!(
+            "RELAY_TRUSTED_PROXY_HOPS=0: behind a reverse proxy every new server shares the proxy's IP budget"
         );
     }
     let pool = open(&cfg).await?;

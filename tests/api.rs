@@ -158,9 +158,40 @@ fn published_vectors_verify() {
             .is_err()
         );
     }
+    let sk = &v["clock_skew"];
+    let r = &v["requests"][sk["request"].as_u64().unwrap() as usize];
+    let (m, path, body) = (
+        r["method"].as_str().unwrap(),
+        r["path"].as_str().unwrap(),
+        r["body"].as_str().unwrap(),
+    );
+    let mut h = axum::http::HeaderMap::new();
+    h.insert(
+        "fliks-key",
+        v["server"]["public_key"].as_str().unwrap().parse().unwrap(),
+    );
+    h.insert("fliks-time", r["time"].to_string().parse().unwrap());
+    h.insert(
+        "fliks-signature",
+        r["signature"].as_str().unwrap().parse().unwrap(),
+    );
+    for n in sk["accepted_at"].as_array().unwrap() {
+        proof::verify_request(host, n.as_i64().unwrap(), m, path, &h, body.as_bytes()).unwrap();
+    }
+    for n in sk["refused_at"].as_array().unwrap() {
+        let e = proof::verify_request(host, n.as_i64().unwrap(), m, path, &h, body.as_bytes())
+            .unwrap_err();
+        assert_eq!(e.code, "clock_skew");
+    }
     let t = &v["tickets"];
     proof::verify_ticket(host, now, t["valid"]["ticket"].as_str().unwrap()).unwrap();
-    for bad in ["wrong_audience", "expired", "too_far_ahead"] {
+    for bad in [
+        "wrong_audience",
+        "expired",
+        "too_far_ahead",
+        "malformed_sub",
+        "malformed_key",
+    ] {
         assert!(
             proof::verify_ticket(host, now, t[bad].as_str().unwrap()).is_err(),
             "{bad}"
@@ -267,4 +298,117 @@ async fn deleting_a_server_cascades_and_a_blocked_key_stays_blocked() {
         .unwrap();
     assert_eq!(left, 0);
     assert_eq!(r.register(&k).await, StatusCode::FORBIDDEN);
+}
+
+async fn raw(r: &Rig, method: &str, path: &str, body: String) -> (StatusCode, Value) {
+    r.call(
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .body(Body::from(body))
+            .unwrap(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn bad_requests_are_refused_with_their_codes() {
+    let r = rig(|_| {}).await;
+    let k = key(4);
+    r.register(&k).await;
+    let late = signed(&k, "POST", "/v1/servers", "{}", NOW - 301);
+    assert_eq!(r.call(late).await.1["error"], "clock_skew");
+    let mut padded = signed(&k, "POST", "/v1/servers", "{}", NOW);
+    padded
+        .headers_mut()
+        .insert("fliks-time", format!("+{NOW}").parse().unwrap());
+    assert_eq!(r.call(padded).await.1["error"], "bad_signature");
+    let (s, _) = raw(&r, "PUT", "/v1/subscriptions", "x".repeat(9000)).await;
+    assert_eq!(s, StatusCode::PAYLOAD_TOO_LARGE);
+    let bad = json!({"ticket": "nope", "platform": "fcm", "token": "t"}).to_string();
+    assert_eq!(
+        raw(&r, "PUT", "/v1/subscriptions", bad).await.1["error"],
+        "bad_ticket"
+    );
+    let (s, body) = r.s(&k, "DELETE", "/v1/servers/self", "").await;
+    assert_eq!((s, body), (StatusCode::NO_CONTENT, Value::Null));
+}
+
+#[tokio::test]
+async fn token_and_put_limits_apply() {
+    let r = rig(|c| {
+        c.limits.push_per_token = 1;
+        c.limits.put_per_sub = 1;
+    })
+    .await;
+    let k = key(5);
+    r.register(&k).await;
+    assert_eq!(r.subscribe(&k, 1, "shared").await, StatusCode::NO_CONTENT);
+    assert_eq!(
+        r.subscribe(&k, 1, "shared").await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(r.subscribe(&k, 2, "shared").await, StatusCode::NO_CONTENT);
+    assert_eq!(r.push(&k, 1, 1).await.0, StatusCode::OK);
+    let (s, body) = r.push(&k, 2, 2).await;
+    assert_eq!(
+        (s, body["scope"].as_str()),
+        (StatusCode::TOO_MANY_REQUESTS, Some("token"))
+    );
+}
+
+#[tokio::test]
+async fn token_delete_needs_no_proof_but_is_limited() {
+    let r = rig(|c| c.limits.delete_per_token = 1).await;
+    let k = key(6);
+    r.register(&k).await;
+    r.subscribe(&k, 1, "t1").await;
+    let del =
+        |sub: Option<String>| json!({"platform": "fcm", "token": "t1", "sub": sub}).to_string();
+    assert_eq!(
+        raw(&r, "DELETE", "/v1/subscriptions", del(None)).await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        raw(&r, "DELETE", "/v1/subscriptions", del(None)).await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(r.push(&k, 1, 1).await.1["error"], "unknown_subscription");
+    let bad = json!({"platform": "fcm", "token": "t2", "sub": "short"}).to_string();
+    assert_eq!(
+        raw(&r, "DELETE", "/v1/subscriptions", bad).await.1["error"],
+        "bad_request"
+    );
+}
+
+#[tokio::test]
+async fn subscription_cap_is_enforced_without_counters_for_refused_puts() {
+    let r = rig(|c| c.limits.subs_per_server = 1).await;
+    let k = key(7);
+    r.register(&k).await;
+    assert_eq!(r.subscribe(&k, 1, "t1").await, StatusCode::NO_CONTENT);
+    assert_eq!(r.subscribe(&k, 1, "t1b").await, StatusCode::NO_CONTENT);
+    assert_eq!(r.subscribe(&k, 2, "t2").await, StatusCode::FORBIDDEN);
+}
+
+#[test]
+fn counters_are_bounded_and_expire_at_their_own_length() {
+    let mut g = Gate::default();
+    g.max_windows = 2;
+    let rule = |k, window| Rule {
+        scope: "s",
+        key: k,
+        limit: 5,
+        window,
+    };
+    g.hit(&[rule("a", 10)], 0).unwrap();
+    g.hit(&[rule("b", 1000)], 0).unwrap();
+    assert_eq!(
+        g.hit(&[rule("c", 10)], 5),
+        Err(Reject::Limited {
+            scope: "relay",
+            retry_after: 60
+        })
+    );
+    g.hit(&[rule("c", 10)], 20).unwrap();
 }

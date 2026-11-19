@@ -69,12 +69,14 @@ pub async fn unblock(pool: &SqlitePool, key: &[u8; 32]) -> sqlx::Result<bool> {
     Ok(r.rows_affected() > 0)
 }
 
-/// Previous `last_seen_at`, when the server exists.
-pub async fn server_last_seen(pool: &SqlitePool, key: &str) -> sqlx::Result<Option<i64>> {
-    sqlx::query_scalar("SELECT last_seen_at FROM servers WHERE key = ?")
-        .bind(key)
-        .fetch_optional(pool)
-        .await
+pub async fn server_exists(pool: &SqlitePool, key: &str) -> sqlx::Result<bool> {
+    Ok(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM servers WHERE key = ?")
+            .bind(key)
+            .fetch_one(pool)
+            .await?
+            > 0,
+    )
 }
 
 /// False when the key was registered meanwhile.
@@ -88,13 +90,15 @@ pub async fn server_insert(pool: &SqlitePool, key: &str, now: u64) -> sqlx::Resu
     Ok(r.rows_affected() > 0)
 }
 
-pub async fn server_touch(pool: &SqlitePool, key: &str, now: u64) -> sqlx::Result<()> {
-    sqlx::query("UPDATE servers SET last_seen_at = ? WHERE key = ?")
+/// True for the first request of the UTC day, so that one statement decides who counts as active.
+pub async fn server_touch(pool: &SqlitePool, key: &str, now: u64) -> sqlx::Result<bool> {
+    let r = sqlx::query("UPDATE servers SET last_seen_at = ? WHERE key = ? AND last_seen_at < ?")
         .bind(now as i64)
         .bind(key)
+        .bind((now - now % 86400) as i64)
         .execute(pool)
         .await?;
-    Ok(())
+    Ok(r.rows_affected() > 0)
 }
 
 /// The subscriptions go with the foreign key cascade.
@@ -123,23 +127,35 @@ pub async fn sub_get(pool: &SqlitePool, key: &str, sub: &str) -> sqlx::Result<Op
     .await
 }
 
-pub async fn sub_count(pool: &SqlitePool, key: &str) -> sqlx::Result<i64> {
-    sqlx::query_scalar("SELECT COUNT(*) FROM subscriptions WHERE server_key = ?")
-        .bind(key)
-        .fetch_one(pool)
-        .await
+/// Whether `sub` exists or the server is under `cap`; the check that lets a full server be refused
+/// before it creates a counter. `sub_upsert` stays the authority.
+pub async fn sub_has_room(pool: &SqlitePool, key: &str, sub: &str, cap: u32) -> sqlx::Result<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM subscriptions WHERE server_key = ?1 AND sub = ?2) \
+         OR (SELECT COUNT(*) FROM subscriptions WHERE server_key = ?1) < ?3",
+    )
+    .bind(key)
+    .bind(sub)
+    .bind(cap as i64)
+    .fetch_one(pool)
+    .await
 }
 
+/// Stores the subscription unless it is a new one past `cap`, decided in the same statement.
 pub async fn sub_upsert(
     pool: &SqlitePool,
     key: &str,
     sub: &str,
     s: &Sub,
+    cap: u32,
     now: u64,
-) -> sqlx::Result<()> {
-    sqlx::query(
+) -> sqlx::Result<bool> {
+    let r = sqlx::query(
         "INSERT INTO subscriptions (server_key, sub, platform, env, token, created_at, last_used_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (server_key, sub) DO UPDATE SET \
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?6 WHERE \
+         EXISTS (SELECT 1 FROM subscriptions WHERE server_key = ?1 AND sub = ?2) \
+         OR (SELECT COUNT(*) FROM subscriptions WHERE server_key = ?1) < ?7 \
+         ON CONFLICT (server_key, sub) DO UPDATE SET \
          platform = excluded.platform, env = excluded.env, token = excluded.token, last_used_at = excluded.last_used_at",
     )
     .bind(key)
@@ -148,10 +164,10 @@ pub async fn sub_upsert(
     .bind(&s.env)
     .bind(&s.token)
     .bind(now as i64)
-    .bind(now as i64)
+    .bind(cap as i64)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(r.rows_affected() > 0)
 }
 
 pub async fn sub_used(pool: &SqlitePool, key: &str, sub: &str, now: u64) -> sqlx::Result<()> {

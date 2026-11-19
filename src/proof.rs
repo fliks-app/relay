@@ -65,7 +65,11 @@ pub fn verify_request(
         .and_then(|b| b.try_into().ok())
         .ok_or_else(ApiError::bad_signature)?;
     let vk = verifying_key(&key_bytes).ok_or_else(ApiError::bad_signature)?;
-    let time: i64 = time.parse().map_err(|_| ApiError::bad_signature())?;
+    let parsed: i64 = time.parse().map_err(|_| ApiError::bad_signature())?;
+    if parsed.to_string() != time {
+        return Err(ApiError::bad_signature());
+    }
+    let time = parsed;
     if (now - time).abs() > SKEW_SECS {
         return Err(ApiError::new(401, "clock_skew"));
     }
