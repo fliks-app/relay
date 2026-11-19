@@ -1,4 +1,4 @@
-# Builds the image on every change to it; nothing is pushed yet.
+# Builds the image on every change to it; the release workflow publishes it.
 name: Docker
 
 on:
