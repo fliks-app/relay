@@ -33,21 +33,55 @@ route serves them, except that a server reads its own counters, signed.
 ## Run one
 
 ```bash
-docker build -t fliks-relay .
-docker run -p 8080:8080 -v relay-data:/data -e RELAY_HOST=relay.example.org \
-  -e RELAY_FAKE_PLATFORMS=1 fliks-relay
+docker run -p 8080:8080 -v relay-data:/data \
+  -e RELAY_HOST=relay.example.org -e RELAY_TRUSTED_PROXY_HOPS=1 \
+  -e APNS_TOPIC=media.fliks.app -e APNS_TEAM_ID=ABCDE12345 \
+  -e APNS_KEY_ID_PRODUCTION=AAAAAAAAAA -e APNS_KEY_FILE_PRODUCTION=/run/secrets/apns_production.p8 \
+  -e APNS_KEY_ID_SANDBOX=BBBBBBBBBB -e APNS_KEY_FILE_SANDBOX=/run/secrets/apns_sandbox.p8 \
+  -e FCM_SERVICE_ACCOUNT_FILE=/run/secrets/fcm.json \
+  -v ./secrets:/run/secrets:ro ghcr.io/fliks-app/relay:latest
 ```
 
-`RELAY_FAKE_PLATFORMS=1` records pushes and sends nothing: development without credentials. The APNs
-and FCM senders are not in this version yet. Put a TLS reverse proxy in front: the relay has no
-TLS and no header read timeout of its own, so the proxy sets both. Set `RELAY_TRUSTED_PROXY_HOPS` to the
-number of proxies (normally `1`): the client IP is then read from `X-Forwarded-For`, and a request that
-arrives without it is refused. With the default `0` the peer address is used, so behind a proxy every
-new server would share one IP budget; the relay logs a warning at start.
+The image is `ghcr.io/fliks-app/relay`; release binaries (linux x86_64 and aarch64) are attached to each
+GitHub release. To build it yourself: `docker build -t fliks-relay .`.
+
+Put a TLS reverse proxy in front: the relay has no TLS and no header read timeout of its own, so the
+proxy sets both. Set `RELAY_TRUSTED_PROXY_HOPS` to the number of proxies (normally `1`): the client IP is
+then read from `X-Forwarded-For`, and a request that arrives without it is refused. With the default `0`
+the peer address is used, so behind a proxy every new server would share one IP budget; the relay logs a
+warning at start.
 
 Another relay only delivers to an app built by its operator (APNs and FCM tokens belong to the
 publisher's app), and the store apps compile in the official relay host. A fork points its own build
 at its own relay.
+
+### Platforms
+
+`serve` refuses to start with no platform configured. APNs and FCM are independent: set either or both.
+The files hold secrets: mount them read-only, never bake them into an image.
+
+| Variable | Meaning |
+|---|---|
+| `APNS_TOPIC` | the app's bundle id (required with APNs) |
+| `APNS_TEAM_ID` | the Apple Developer team id (required with APNs) |
+| `APNS_KEY_ID_PRODUCTION`, `APNS_KEY_FILE_PRODUCTION` | key id and `.p8` file of the production key |
+| `APNS_KEY_ID_SANDBOX`, `APNS_KEY_FILE_SANDBOX` | the same for the sandbox key |
+| `FCM_SERVICE_ACCOUNT_FILE` | the Firebase service account JSON |
+| `RELAY_FAKE_PLATFORMS=1` | no real platform: pushes are recorded and nothing is sent (development) |
+
+Apple scopes a team key to sandbox or production, so set one key per environment you serve. A push that
+APNs rejects as `BadDeviceToken` is retried once on the other environment when its key is set; only then is
+the subscription deleted.
+
+**APNs keys.** In the Apple Developer account, Certificates, Identifiers & Profiles: enable Push
+Notifications on the app's App ID, then Keys, create a key with the Apple Push Notifications service
+enabled, once with the Sandbox environment and once with Production, and download each `.p8` (Apple
+offers it once). The key id is shown on the key page; the team id is under Membership details.
+
+**FCM service account.** In the Firebase console, create a project and add the Android app. Project
+settings, Service accounts, Generate new private key: the downloaded JSON is `FCM_SERVICE_ACCOUNT_FILE`.
+The account needs the Firebase Cloud Messaging API (V1) enabled and the role "Firebase Cloud Messaging
+API Admin" (or `cloudmessaging.messages.create`).
 
 ### Configuration
 

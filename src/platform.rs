@@ -30,7 +30,7 @@ impl Kind {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Env {
     Sandbox,

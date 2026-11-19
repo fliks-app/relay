@@ -5,8 +5,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use fliks_relay::api::{self, AppState};
+use fliks_relay::apns::{Apns, EnvKey};
 use fliks_relay::config::Config;
-use fliks_relay::platform::Platforms;
+use fliks_relay::fcm::Fcm;
+use fliks_relay::platform::{Env, Kind, Platforms};
 use fliks_relay::proof::unb64;
 use fliks_relay::{stats, store};
 use rand::RngCore;
@@ -138,11 +140,6 @@ async fn main() -> Result<()> {
 
 async fn serve(cfg: Config) -> Result<()> {
     cfg.require_host()?;
-    if !cfg.fake_platforms {
-        bail!(
-            "no platform is configured: set RELAY_FAKE_PLATFORMS=1 (the APNs and FCM senders are not built in yet)"
-        );
-    }
     if cfg.proxy_hops == 0 {
         tracing::warn!(
             "RELAY_TRUSTED_PROXY_HOPS=0: behind a reverse proxy every new server shares the proxy's IP budget"
@@ -150,7 +147,11 @@ async fn serve(cfg: Config) -> Result<()> {
     }
     let pool = open(&cfg).await?;
     let secret = stats_secret(&cfg)?;
-    let (platforms, _) = Platforms::fake();
+    let platforms = if cfg.fake_platforms {
+        Platforms::fake().0
+    } else {
+        real_platforms()?
+    };
     let state = Arc::new(AppState::new(
         pool.clone(),
         cfg.clone(),
@@ -184,6 +185,67 @@ async fn serve(cfg: Config) -> Result<()> {
     .with_graceful_shutdown(shutdown())
     .await?;
     Ok(())
+}
+
+fn env(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.is_empty())
+}
+
+fn required(name: &str) -> Result<String> {
+    env(name).with_context(|| format!("{name} is not set"))
+}
+
+/// APNs from `APNS_*`, FCM from `FCM_SERVICE_ACCOUNT_FILE`; each is optional, one is required.
+fn real_platforms() -> Result<Platforms> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()?;
+    let mut platforms = Platforms::default();
+    let mut keys = vec![];
+    for (e, suffix, url) in [
+        (Env::Production, "PRODUCTION", "https://api.push.apple.com"),
+        (
+            Env::Sandbox,
+            "SANDBOX",
+            "https://api.sandbox.push.apple.com",
+        ),
+    ] {
+        if let Some(id) = env(&format!("APNS_KEY_ID_{suffix}")) {
+            let file = required(&format!("APNS_KEY_FILE_{suffix}"))?;
+            keys.push((
+                e,
+                EnvKey {
+                    key_id: id,
+                    pem: std::fs::read(&file).with_context(|| format!("reading {file}"))?,
+                    base_url: url.into(),
+                },
+            ));
+        }
+    }
+    if !keys.is_empty() {
+        let apns = Apns::new(
+            client.clone(),
+            required("APNS_TOPIC")?,
+            required("APNS_TEAM_ID")?,
+            keys,
+        )?;
+        platforms = platforms.with(Kind::Apns, Arc::new(apns));
+    }
+    if let Some(file) = env("FCM_SERVICE_ACCOUNT_FILE") {
+        let account = serde_json::from_slice(
+            &std::fs::read(&file).with_context(|| format!("reading {file}"))?,
+        )
+        .with_context(|| format!("{file} is not a service account file"))?;
+        let fcm = Fcm::new(client, account, "https://fcm.googleapis.com")?;
+        platforms = platforms.with(Kind::Fcm, Arc::new(fcm));
+    }
+    if platforms.names().is_empty() {
+        bail!(
+            "no platform is configured: set the APNS_* or FCM_SERVICE_ACCOUNT_FILE variables, or RELAY_FAKE_PLATFORMS=1 for development"
+        );
+    }
+    tracing::info!("platforms: {}", platforms.names().join(", "));
+    Ok(platforms)
 }
 
 async fn shutdown() {
