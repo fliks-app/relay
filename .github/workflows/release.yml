@@ -1,0 +1,21 @@
+# release-please opens the release PR; the image and binaries are published by a later workflow.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          # A PAT lets the release PR trigger CI; GITHUB_TOKEN-created PRs never do.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
