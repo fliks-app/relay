@@ -78,10 +78,10 @@ Notifications on the app's App ID, then Keys, create a key with the Apple Push N
 enabled, once with the Sandbox environment and once with Production, and download each `.p8` (Apple
 offers it once). The key id is shown on the key page; the team id is under Membership details.
 
-**FCM service account.** In the Firebase console, create a project and add the Android app. Project
-settings, Service accounts, Generate new private key: the downloaded JSON is `FCM_SERVICE_ACCOUNT_FILE`.
-The account needs the Firebase Cloud Messaging API (V1) enabled and the role "Firebase Cloud Messaging
-API Admin" (or `cloudmessaging.messages.create`).
+**FCM service account.** In the Firebase console, create a project (Analytics not needed) and add
+the Android app. In Google Cloud, IAM, Service accounts, create an account with the single role
+"Firebase Cloud Messaging API Admin", then Keys, Add key, JSON: that file is `FCM_SERVICE_ACCOUNT_FILE`.
+Don't use the `firebase-adminsdk` account Firebase creates: it can administer the whole project.
 
 ### Configuration
 
