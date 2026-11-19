@@ -75,6 +75,7 @@ impl Fcm {
             return Ok(t.clone());
         }
         let fail = |e: String| PushError::Failed(format!("fcm oauth: {e}"));
+        let net = |e: reqwest::Error| fail(e.without_url().to_string());
         let iat = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -100,11 +101,11 @@ impl Fcm {
             ])
             .send()
             .await
-            .map_err(|e| fail(e.to_string()))?;
+            .map_err(net)?;
         if !res.status().is_success() {
             return Err(fail(format!("status {}", res.status())));
         }
-        let g: Grant = res.json().await.map_err(|e| fail(e.to_string()))?;
+        let g: Grant = res.json().await.map_err(net)?;
         let t: Arc<str> = g.access_token.into();
         let until = Instant::now() + Duration::from_secs(g.expires_in.saturating_sub(60));
         *cached = Some((t.clone(), until));
@@ -127,7 +128,7 @@ impl Platform for Fcm {
             .json(&body)
             .send()
             .await
-            .map_err(|e| PushError::Failed(format!("fcm: {e}")))?;
+            .map_err(|e| PushError::Failed(format!("fcm: {}", e.without_url())))?;
         let status = res.status();
         if status.is_success() {
             return Ok(());
@@ -136,6 +137,7 @@ impl Platform for Fcm {
             *self.token.lock().await = None;
         }
         let err = res.json::<ErrBody>().await.ok().and_then(|b| b.error);
+        let not_found = status == reqwest::StatusCode::NOT_FOUND;
         let code = err
             .as_ref()
             .and_then(|e| {
@@ -144,9 +146,15 @@ impl Platform for Fcm {
                     .find_map(|d| d.get("errorCode")?.as_str().map(String::from))
             })
             .or_else(|| err.as_ref().and_then(|e| e.status.clone()))
-            .unwrap_or_default();
+            .unwrap_or_else(|| {
+                if not_found {
+                    "NOT_FOUND".into()
+                } else {
+                    String::new()
+                }
+            });
         Err(match code.as_str() {
-            "UNREGISTERED" | "SENDER_ID_MISMATCH" => PushError::DeadToken,
+            "UNREGISTERED" | "SENDER_ID_MISMATCH" | "NOT_FOUND" => PushError::DeadToken,
             _ => PushError::Failed(format!("fcm {status}: {code}")),
         })
     }

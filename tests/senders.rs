@@ -279,3 +279,35 @@ async fn fcm_error_mapping() {
         assert_eq!(f.send(&push(None)).await, Err(want));
     }
 }
+
+#[tokio::test]
+async fn transport_errors_hold_no_device_token() {
+    let a = apns(&[(Env::Production, "http://127.0.0.1:1")]);
+    let mut p = push(Some(Env::Production));
+    p.token = "SECRETDEVICETOKEN";
+    let Err(PushError::Failed(msg)) = a.send(&p).await else {
+        panic!("expected a transport failure");
+    };
+    assert!(!msg.contains("SECRETDEVICETOKEN"), "{msg}");
+}
+
+#[test]
+fn apns_serves_only_configured_environments() {
+    let a = apns(&[(Env::Production, "http://x")]);
+    assert!(a.serves(Some(Env::Production)) && a.serves(None));
+    assert!(!a.serves(Some(Env::Sandbox)));
+}
+
+#[tokio::test]
+async fn fcm_404_without_a_fcm_error_is_a_dead_token() {
+    for body in [json!({"error": {"status": "NOT_FOUND"}}), json!(null)] {
+        let (url, _) = mock(fcm_reply((404, body))).await;
+        let f = Fcm::new(
+            reqwest::Client::new(),
+            account(format!("{url}/token")),
+            &url,
+        )
+        .unwrap();
+        assert_eq!(f.send(&push(None)).await, Err(PushError::DeadToken));
+    }
+}

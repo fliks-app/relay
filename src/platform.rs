@@ -80,6 +80,10 @@ pub enum PushError {
 #[async_trait]
 pub trait Platform: Send + Sync {
     async fn send(&self, push: &Push<'_>) -> Result<(), PushError>;
+    /// Whether a token registered for `env` (APNs only) can be delivered.
+    fn serves(&self, _env: Option<Env>) -> bool {
+        true
+    }
 }
 
 #[derive(Default)]

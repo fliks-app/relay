@@ -50,7 +50,7 @@ and `"scope"`.
 
 | Status | `error` | Cause |
 |---|---|---|
-| 400 | `bad_request`, `unsupported_platform` | malformed body or field; platform the relay does not serve |
+| 400 | `bad_request`, `unsupported_platform`, `unsupported_environment` | malformed body or field; platform the relay does not serve; APNs `env` the relay has no key for |
 | 401 | `bad_signature`, `clock_skew`, `bad_ticket`, `unknown_server` | see above; `unknown_server`: key not registered |
 | 403 | `blocked`, `unknown_server`, `subscription_cap` | `unknown_server` is a 403 on `PUT /v1/subscriptions` (the caller is a device, not a signed server) and a 401 on the signed routes |
 | 404 | `unknown_subscription` | no such `(key, sub)`, or the platform says the token is dead |

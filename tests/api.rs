@@ -8,7 +8,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use fliks_relay::api::{self, AppState};
 use fliks_relay::config::Config;
 use fliks_relay::gate::{Gate, Reject, Rule};
-use fliks_relay::platform::{Fake, Platforms, PushError};
+use fliks_relay::platform::{Env, Fake, Kind, Platform, Platforms, Push, PushError};
 use fliks_relay::proof::{b64, request_message, unb64};
 use fliks_relay::{proof, stats, store};
 use http_body_util::BodyExt;
@@ -411,4 +411,42 @@ fn counters_are_bounded_and_expire_at_their_own_length() {
         })
     );
     g.hit(&[rule("c", 10)], 20).unwrap();
+}
+
+struct SandboxLess;
+
+#[async_trait::async_trait]
+impl Platform for SandboxLess {
+    async fn send(&self, _: &Push<'_>) -> Result<(), PushError> {
+        Ok(())
+    }
+    fn serves(&self, env: Option<Env>) -> bool {
+        env != Some(Env::Sandbox)
+    }
+}
+
+#[tokio::test]
+async fn registration_for_an_unserved_apns_environment_is_refused() {
+    let mut r = rig(|_| {}).await;
+    let mut st = AppState::new(
+        store::open_memory().await.unwrap(),
+        Config::from_env().unwrap(),
+        Platforms::default().with(Kind::Apns, Arc::new(SandboxLess)),
+        vec![7; 32],
+    );
+    st.cfg.host = HOST.into();
+    let c = r.clock.clone();
+    st.clock = Box::new(move || c.load(Ordering::SeqCst));
+    r.app = api::router(Arc::new(st));
+    let k = key(9);
+    r.register(&k).await;
+    let t = ticket(&k, [1; 16], NOW + 300);
+    for (env, status) in [("sandbox", 400), ("production", 204)] {
+        let body = json!({"ticket": t, "platform": "apns", "token": "tok", "env": env});
+        let (s, b) = raw(&r, "PUT", "/v1/subscriptions", body.to_string()).await;
+        assert_eq!(s.as_u16(), status, "{env}");
+        if status == 400 {
+            assert_eq!(b["error"], "unsupported_environment");
+        }
+    }
 }

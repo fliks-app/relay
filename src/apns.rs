@@ -12,6 +12,8 @@ use crate::platform::{Env, Platform, Push, PushError};
 
 /// Apple accepts a provider token between 20 and 60 minutes old.
 const TOKEN_LIFETIME: Duration = Duration::from_secs(45 * 60);
+/// Apple answers `TooManyProviderTokenUpdates` to a token renewed more than once per 20 minutes.
+const MIN_REGEN: Duration = Duration::from_secs(20 * 60);
 
 pub struct EnvKey {
     pub key_id: String,
@@ -27,6 +29,17 @@ struct Signer {
 }
 
 impl Signer {
+    /// Drops the cached token unless it is too young to be replaced.
+    fn invalidate(&self) {
+        let mut cached = self.cached.lock().unwrap();
+        if cached
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() >= MIN_REGEN)
+        {
+            *cached = None;
+        }
+    }
+
     fn token(&self, team_id: &str) -> Result<String, PushError> {
         let mut cached = self.cached.lock().unwrap();
         if let Some((t, at)) = cached.as_ref()
@@ -45,7 +58,7 @@ impl Signer {
             &serde_json::json!({ "iss": team_id, "iat": iat }),
             &self.key,
         )
-        .map_err(|e| PushError::Failed(format!("apns provider token: {e}")))?;
+        .map_err(|e| PushError::Failed(format!("apns provider token: {}", e)))?;
         *cached = Some((t.clone(), Instant::now()));
         Ok(t)
     }
@@ -126,7 +139,7 @@ impl Apns {
             .json(&body)
             .send()
             .await
-            .map_err(|e| PushError::Failed(format!("apns: {e}")))?;
+            .map_err(|e| PushError::Failed(format!("apns: {}", e.without_url())))?;
         let status = res.status();
         if status.is_success() {
             return Ok(());
@@ -142,8 +155,11 @@ impl Apns {
             "Unregistered" | "ExpiredToken" | "DeviceTokenNotForTopic" => PushError::DeadToken,
             "PayloadTooLarge" => PushError::TooLarge,
             "ExpiredProviderToken" | "InvalidProviderToken" => {
-                *signer.cached.lock().unwrap() = None;
+                signer.invalidate();
                 PushError::Failed(format!("apns {status}: {reason}"))
+            }
+            "TooManyProviderTokenUpdates" => {
+                PushError::Failed(format!("apns provider token renewed too often: {reason}"))
             }
             _ => PushError::Failed(format!("apns {status}: {reason}")),
         })
@@ -152,6 +168,10 @@ impl Apns {
 
 #[async_trait]
 impl Platform for Apns {
+    fn serves(&self, env: Option<Env>) -> bool {
+        self.signers.contains_key(&env.unwrap_or(Env::Production))
+    }
+
     async fn send(&self, p: &Push<'_>) -> Result<(), PushError> {
         let env = p.env.unwrap_or(Env::Production);
         match self.send_to(env, p).await {
