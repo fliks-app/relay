@@ -190,10 +190,13 @@ fn client_key(st: &AppState, parts: &Parts) -> Result<String, ApiError> {
     })
 }
 
+/// Protocol versions served; `/v1` routes stay for as long as 1 is listed.
+const SERVED_VERSIONS: [u32; 1] = [1];
+
 async fn info(State(st): State<Shared>) -> Json<Value> {
     let l = &st.cfg.limits;
     Json(json!({
-        "api": 1,
+        "api": SERVED_VERSIONS,
         "platforms": st.platforms.names(),
         "limits": {
             "push_per_subscription_hour": l.push_per_sub,

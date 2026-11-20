@@ -7,6 +7,15 @@ independent Ed25519 implementation. Every implementation (S, apps, R) must repro
 Unknown body fields are ignored, so fields can be added without a version bump. Bodies are JSON,
 at most 8 KiB (`413` above). Binary values are base64url without padding.
 
+## Versions
+
+`GET /v1/info` lists in `api` every protocol version R serves. S registers only when its own version is
+in that list. R keeps the `/v1` routes for as long as `api` lists 1, so a relay serving versions 1 and 2
+answers `"api": [1, 2]` and both generations of S keep working.
+
+The plaintext's `v` (see Encryption) is versioned separately, by S for D: D shows the generic text for a
+`v` higher than the one it knows (see Device rules).
+
 ## Identity and request signature
 
 - S holds an Ed25519 key pair. Its id on the wire, "the key", is the 32-byte public key, base64url.
@@ -64,7 +73,7 @@ and `"scope"`.
 
 | Route | Caller, proof | Body | Result |
 |---|---|---|---|
-| `GET /v1/info` | anyone | none | `{"api": 1, "platforms": [...], "limits": {...}}` |
+| `GET /v1/info` | anyone | none | `{"api": [1], "platforms": [...], "limits": {...}}` |
 | `POST /v1/servers` | S, signed | `{}` | 201, or 200 when known; `403 blocked` |
 | `DELETE /v1/servers/self` | S, signed | none | 204; deletes the server, its subscriptions and its counters; allowed for a blocked key, and for an unknown one (204) |
 | `GET /v1/servers/self/stats` | S, signed | none | `{"days": [{day, platform, notifications, accepted, limited, failed, dead}]}`, last 30 days |
@@ -126,6 +135,7 @@ D checks every push before showing it:
 - `k` differs from the key stored with `s`: dropped.
 - Unknown `s`: dropped, and `DELETE /v1/subscriptions {token, sub}`.
 - Known `s` that fails to decrypt: the generic text, nothing deleted.
+- Decrypts, but `v` is higher than the plaintext version D knows: the same generic text, nothing deleted.
 - `ts + ttl` in the past, or an `id` among the last 200 shown: dropped.
 
 ## Encryption
