@@ -450,3 +450,15 @@ async fn registration_for_an_unserved_apns_environment_is_refused() {
         }
     }
 }
+
+#[tokio::test]
+async fn info_lists_the_served_protocol_versions() {
+    let r = rig(|_| {}).await;
+    let req = Request::builder()
+        .uri("/v1/info")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = r.call(req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["api"], json!([1]));
+}
