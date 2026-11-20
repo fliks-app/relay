@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/fliks-app/relay/compare/v0.1.0...v0.1.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* log at info level by default, to stderr without colours when piped ([#15](https://github.com/fliks-app/relay/issues/15)) ([e2e5059](https://github.com/fliks-app/relay/commit/e2e5059fcd5238c3094986a284d0a3333a5d93e7))
+
 ## 0.1.0 (2026-11-20)
 
 
