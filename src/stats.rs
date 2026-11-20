@@ -1,7 +1,7 @@
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::Serialize;
 use sha2::Sha256;
-use sqlx::SqlitePool;
+use sqlx::{AssertSqlSafe, SqlitePool};
 use time::OffsetDateTime;
 
 pub fn day(unix: u64) -> String {
@@ -53,9 +53,10 @@ impl Field {
     }
 }
 
+// `c` is one of the static column names above, never caller input.
 pub async fn bump_global(pool: &SqlitePool, day: &str, f: Field) -> sqlx::Result<()> {
     let c = f.global_col();
-    sqlx::query(&format!("INSERT INTO stats_daily (day, {c}) VALUES (?, 1) ON CONFLICT (day) DO UPDATE SET {c} = {c} + 1"))
+    sqlx::query(AssertSqlSafe(format!("INSERT INTO stats_daily (day, {c}) VALUES (?, 1) ON CONFLICT (day) DO UPDATE SET {c} = {c} + 1")))
         .bind(day)
         .execute(pool)
         .await?;
@@ -74,11 +75,11 @@ pub async fn bump_server(
     let Some(c) = f.server_col() else {
         return Ok(());
     };
-    sqlx::query(&format!(
+    sqlx::query(AssertSqlSafe(format!(
         "INSERT INTO stats_server_daily (day, server_id, platform, {c}) \
          SELECT ?, ?, ?, 1 WHERE EXISTS (SELECT 1 FROM servers WHERE key = ?) \
          ON CONFLICT (day, server_id, platform) DO UPDATE SET {c} = {c} + 1"
-    ))
+    )))
     .bind(day)
     .bind(server_id)
     .bind(platform)
