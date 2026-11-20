@@ -30,5 +30,6 @@ jobs:
         with:
           context: .
           push: false
-          cache-from: type=gha
-          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,mode=max' || '' }}
+          # Same scope as the release's amd64 build, which then starts from main's layers.
+          cache-from: type=gha,scope=amd64
+          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,scope=amd64,mode=max' || '' }}
