@@ -11,7 +11,6 @@ use fliks_relay::fcm::Fcm;
 use fliks_relay::platform::{Env, Kind, Platforms};
 use fliks_relay::proof::unb64;
 use fliks_relay::{stats, store};
-use rand::RngCore;
 use sqlx::SqlitePool;
 
 #[derive(Parser)]
@@ -62,8 +61,7 @@ fn stats_secret(cfg: &Config) -> Result<Vec<u8>> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let path = cfg.data_dir.join("stats_secret");
-    let mut secret = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut secret);
+    let secret: [u8; 32] = rand::random();
     match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
