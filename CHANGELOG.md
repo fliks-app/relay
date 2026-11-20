@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/fliks-app/relay/compare/v0.1.1...v0.2.0) (2026-11-20)
+
+
+### Features
+
+* **api:** list the served protocol versions in /v1/info ([#18](https://github.com/fliks-app/relay/issues/18)) ([ecde818](https://github.com/fliks-app/relay/commit/ecde818cff9d8c227c3159b69fdf311c8d981264))
+
 ## [0.1.1](https://github.com/fliks-app/relay/compare/v0.1.0...v0.1.1) (2026-11-20)
 
 
