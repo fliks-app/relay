@@ -143,7 +143,7 @@ D checks every push before showing it:
 The payload is an RFC 8291 `aes128gcm` message, one record, 103 bytes of overhead, encrypted by S for
 one subscription (D's P-256 public key and 16-byte auth secret). R never decrypts or checks it, so this
 repository has no vector for it: the RFC's own Appendix A is the reference. The plaintext is JSON of 2500 bytes at most:
-`{v: 1, id, ts, ttl, cat, title, body, url, image?, actions?, badge?, user}`.
+`{v: 1, id, ts, ttl, cat, title, body, url, image?, actions?, badge?, user, tag?}`.
 
 ## Statistics id
 
