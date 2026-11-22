@@ -392,11 +392,11 @@ async fn subscription_cap_is_enforced_without_counters_for_refused_puts() {
 }
 
 #[test]
-fn counters_are_bounded_and_expire_at_their_own_length() {
+fn unauthenticated_counters_are_bounded_and_expire_at_their_own_length() {
     let mut g = Gate::default();
     g.max_windows = 2;
     let rule = |k, window| Rule {
-        scope: "s",
+        scope: "token_delete",
         key: k,
         limit: 5,
         window,
@@ -410,7 +410,56 @@ fn counters_are_bounded_and_expire_at_their_own_length() {
             retry_after: 60
         })
     );
+    g.hit(&[rule("a", 10)], 5).unwrap();
     g.hit(&[rule("c", 10)], 20).unwrap();
+}
+
+#[test]
+fn signed_scopes_ignore_the_cap_of_unauthenticated_ones() {
+    let mut g = Gate::default();
+    g.max_windows = 1;
+    let rule = |scope, k| Rule {
+        scope,
+        key: k,
+        limit: 5,
+        window: 1000,
+    };
+    g.hit(&[rule("token_delete", "a")], 0).unwrap();
+    assert!(g.hit(&[rule("token_delete", "b")], 0).is_err());
+    g.hit(&[rule("subscription", "x"), rule("token", "y")], 0)
+        .unwrap();
+    g.hit(&[rule("subscription", "x"), rule("token", "y")], 0)
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_flood_of_random_tokens_leaves_signed_pushes_admitted() {
+    let r = rig(|_| {}).await;
+    let k = key(8);
+    r.register(&k).await;
+    r.subscribe(&k, 1, "t1").await;
+    r.state.gate.lock().unwrap().max_windows = 3;
+    for i in 0..10 {
+        let del = json!({"platform": "fcm", "token": format!("rnd{i}")}).to_string();
+        raw(&r, "DELETE", "/v1/subscriptions", del).await;
+    }
+    assert_eq!(r.push(&k, 1, 1).await.0, StatusCode::OK);
+    assert_eq!(r.push(&k, 2, 1).await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn token_delete_is_limited_per_address() {
+    let r = rig(|c| c.limits.delete_per_ip = 1).await;
+    let del = |t: &str| json!({"platform": "fcm", "token": t}).to_string();
+    assert_eq!(
+        raw(&r, "DELETE", "/v1/subscriptions", del("a")).await.0,
+        StatusCode::NO_CONTENT
+    );
+    let (s, body) = raw(&r, "DELETE", "/v1/subscriptions", del("b")).await;
+    assert_eq!(
+        (s, body["scope"].as_str()),
+        (StatusCode::TOO_MANY_REQUESTS, Some("token_delete_ip"))
+    );
 }
 
 struct SandboxLess;
