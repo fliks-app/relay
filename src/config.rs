@@ -12,6 +12,7 @@ pub struct Limits {
     pub subs_per_server: u32,
     pub put_per_sub: u32,
     pub delete_per_token: u32,
+    pub delete_per_ip: u32,
     pub new_servers_per_ip: u32,
     pub new_servers_total: u32,
 }
@@ -51,6 +52,7 @@ impl Config {
                 subs_per_server: var("RELAY_LIMIT_SUBSCRIPTIONS_PER_SERVER", 1000)?,
                 put_per_sub: var("RELAY_LIMIT_PUT_PER_SUBSCRIPTION_HOUR", 10)?,
                 delete_per_token: var("RELAY_LIMIT_DELETE_PER_TOKEN_HOUR", 10)?,
+                delete_per_ip: var("RELAY_LIMIT_DELETE_PER_IP_HOUR", 60)?,
                 new_servers_per_ip: var("RELAY_LIMIT_NEW_SERVERS_PER_IP_DAY", 10)?,
                 new_servers_total: var("RELAY_LIMIT_NEW_SERVERS_DAY", 500)?,
             },

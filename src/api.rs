@@ -347,18 +347,27 @@ struct UnsubscribeBody {
 }
 
 async fn unsubscribe_token(State(st): State<Shared>, req: Request) -> Reply {
-    let (_, body) = body_of(req).await?;
+    let (parts, body) = body_of(req).await?;
+    let ip = client_key(&st, &parts)?;
     let b: UnsubscribeBody = json_of(&body)?;
     let sub = match &b.sub {
         Some(s) => Some(id16(s).map(|s| b64(&s)).ok_or_else(ApiError::bad_request)?),
         None => None,
     };
-    st.hit(&[Rule {
-        scope: "token_delete",
-        key: &format!("del:{}:{}", b.platform.as_str(), b.token),
-        limit: st.cfg.limits.delete_per_token,
-        window: HOUR,
-    }])?;
+    st.hit(&[
+        Rule {
+            scope: "token_delete_ip",
+            key: &ip,
+            limit: st.cfg.limits.delete_per_ip,
+            window: HOUR,
+        },
+        Rule {
+            scope: "token_delete",
+            key: &format!("del:{}:{}", b.platform.as_str(), b.token),
+            limit: st.cfg.limits.delete_per_token,
+            window: HOUR,
+        },
+    ])?;
     if store::subs_delete_by_token(&st.pool, b.platform.as_str(), &b.token, sub.as_deref()).await?
         > 0
     {

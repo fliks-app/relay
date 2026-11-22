@@ -1,5 +1,6 @@
 //! Anti-spam counters: fixed windows in memory, reset on restart, one relay instance.
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 
 use sha2::{Digest, Sha256};
@@ -39,8 +40,10 @@ pub struct Admitted {
     pub new_platform: bool,
 }
 
-/// Counters held at once; the unauthenticated routes create them from caller input.
+/// Counters the unauthenticated scopes may hold at once; signed scopes are bounded by their registered servers.
 pub const MAX_WINDOWS: usize = 100_000;
+
+const UNAUTHENTICATED: [&str; 3] = ["token_delete", "token_delete_ip", "new_servers_ip"];
 
 type Slot = [u8; 16];
 
@@ -53,8 +56,9 @@ fn slot(r: &Rule) -> Slot {
 }
 
 pub struct Gate {
-    /// Window start, window length, count.
-    windows: HashMap<Slot, (u64, u64, u32)>,
+    /// Window start, window length, count, whether it counts against `max_windows`.
+    windows: HashMap<Slot, (u64, u64, u32, bool)>,
+    unauthenticated: usize,
     nids: HashMap<(String, [u8; 16]), Nid>,
     pub max_windows: usize,
 }
@@ -63,6 +67,7 @@ impl Default for Gate {
     fn default() -> Self {
         Self {
             windows: HashMap::new(),
+            unauthenticated: 0,
             nids: HashMap::new(),
             max_windows: MAX_WINDOWS,
         }
@@ -72,7 +77,7 @@ impl Default for Gate {
 impl Gate {
     fn check(&self, r: &Rule, now: u64) -> Result<(), Reject> {
         match self.windows.get(&slot(r)) {
-            Some(&(start, _, count)) if now < start + r.window && count >= r.limit => {
+            Some(&(start, _, count, _)) if now < start + r.window && count >= r.limit => {
                 Err(Reject::Limited {
                     scope: r.scope,
                     retry_after: start + r.window - now,
@@ -83,9 +88,14 @@ impl Gate {
     }
 
     fn bump(&mut self, r: &Rule, now: u64) {
-        let e = self.windows.entry(slot(r)).or_insert((now, r.window, 0));
+        let capped = UNAUTHENTICATED.contains(&r.scope);
+        let e = self.windows.entry(slot(r));
+        if matches!(e, Entry::Vacant(_)) && capped {
+            self.unauthenticated += 1;
+        }
+        let e = e.or_insert((now, r.window, 0, capped));
         if now >= e.0 + r.window {
-            *e = (now, r.window, 0);
+            *e = (now, r.window, 0, capped);
         }
         e.2 += 1;
     }
@@ -93,9 +103,15 @@ impl Gate {
     /// Checks every rule, then counts them all: a refused request consumes nothing.
     pub fn hit(&mut self, rules: &[Rule], now: u64) -> Result<(), Reject> {
         rules.iter().try_for_each(|r| self.check(r, now))?;
-        if self.windows.len() + rules.len() > self.max_windows {
+        let fresh = |g: &Self| {
+            rules
+                .iter()
+                .filter(|r| UNAUTHENTICATED.contains(&r.scope) && !g.windows.contains_key(&slot(r)))
+                .count()
+        };
+        if self.unauthenticated + fresh(self) > self.max_windows {
             self.prune(now);
-            if self.windows.len() + rules.len() > self.max_windows {
+            if self.unauthenticated + fresh(self) > self.max_windows {
                 return Err(Reject::Limited {
                     scope: "relay",
                     retry_after: 60,
@@ -174,7 +190,8 @@ impl Gate {
 
     pub fn prune(&mut self, now: u64) {
         self.windows
-            .retain(|_, (start, window, _)| now < *start + *window);
+            .retain(|_, (start, window, _, _)| now < *start + *window);
+        self.unauthenticated = self.windows.values().filter(|w| w.3).count();
         self.nids.retain(|_, n| now < n.at + HOUR);
     }
 }

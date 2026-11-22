@@ -103,6 +103,7 @@ All by environment. Limits are fixed windows in memory, reset on restart, for on
 | `RELAY_LIMIT_SUBSCRIPTIONS_PER_SERVER` | `1000` |
 | `RELAY_LIMIT_PUT_PER_SUBSCRIPTION_HOUR` | `10` |
 | `RELAY_LIMIT_DELETE_PER_TOKEN_HOUR` | `10` |
+| `RELAY_LIMIT_DELETE_PER_IP_HOUR` (IPv4 or IPv6 /48) | `60` |
 | `RELAY_LIMIT_NEW_SERVERS_PER_IP_DAY` (IPv4 or IPv6 /48) | `10` |
 | `RELAY_LIMIT_NEW_SERVERS_DAY` | `500` |
 | `RELAY_STATS_SERVER_DAYS` | `90` |
