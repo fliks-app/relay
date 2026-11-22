@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/fliks-app/relay/compare/v0.2.0...v0.2.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* **gate:** cap only new windows of unauthenticated scopes, limit DELETE per address ([#21](https://github.com/fliks-app/relay/issues/21)) ([0aec2ab](https://github.com/fliks-app/relay/commit/0aec2ab7b36eb4db8e279ce7e4a5d1a025225356))
+
 ## [0.2.0](https://github.com/fliks-app/relay/compare/v0.1.1...v0.2.0) (2026-11-20)
 
 
